@@ -46,7 +46,7 @@ A lightweight, asynchronous Discord bot designed to streamline group movie outin
   - **Dynamic Date Headers:** Displays exact DD/MM/YYYY calendar dates calculated relative to the weekly cache timestamp.
   - **Compact Embed UI:** Uses set_thumbnail() to pin small ~80x80px poster graphics to embed corners without clogging chat channels.
   - **Accurate Metadata & Fallbacks:** Movie entries are enriched via OMDb and Wikipedia REST API lookups. Missing data is explicitly displayed as Unknown (preventing misleading "NR" or "General" labels).
-- **`/showtimes [movie] [date] [visibility]`**: Fetches showtimes for a specific film on a given date. (In Progress)
+- **`/showtimes [movie] [visibility]`**: Fetches showtimes for a specific film. (In Progress)
   - The [movie] parameter features Discord Autocomplete, suggesting currently playing movies at your theater as you type.
   - The [date] parameter accepts a simple mm/dd format and automatically infers the current year.
 - **`/upcoming [visibility]`**: Fetches "Coming Soon" releases for the configured location. (In Progress)
