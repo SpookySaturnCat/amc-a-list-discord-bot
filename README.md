@@ -22,13 +22,13 @@ A lightweight, asynchronous Discord bot designed to streamline group movie outin
 - **Weekly Movie Poll:** A background task using `discord.ext.tasks` wakes up once a week, pulls the upcoming weeks showtimes, and automatically posts a native Discord poll in your designated `#movie-planning` channel to help the group decide what to watch.
 - **Automated Scheduling:** Dynamically generates Discord Events based on winning poll results.
 - **Discussion Threads:** Automatically spins up dedicated public threads for movie coordination and spoiler-safe chatting.
-- **Targeted Notifications:** Pings a specific `@movie goer` role for all polls, threads, and events to avoid server-wide notification fatigue.
+- **Targeted Notifications:** Pings a specific @movie goer role for all polls, threads, and events to avoid server-wide notification fatigue.
 
 ## Tech Stack
 - **Language:** Python 3.10+
 - **Discord API:** `discord.py` (for Slash Commands, Autocomplete, and Tasks)
-- **Web Scraping:** `BeautifulSoup4` (HTML parsing)
-- **Networking:** `aiohttp` (Asynchronous HTTP requests)
+- **Web Scraping:** `BeautifulSoup4` with `lxml` parser (HTML/XML parsing)
+- **Networking:** `aiohttp` and `urllib` (Asynchronous HTTP requests and thread-isolated network execution)
 - **External APIs:** [OMDb API](https://www.omdbapi.com/)
 
 ## Installation & Setup
@@ -41,4 +41,4 @@ A lightweight, asynchronous Discord bot designed to streamline group movie outin
 ### 2. Clone the Repository
 ```bash
 git clone [https://github.com/yourusername/amc-discord-bot.git](https://github.com/yourusername/amc-discord-bot.git)
-cd amc-discord-bot
+cd amc-discord-bot   
