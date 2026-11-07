@@ -1,44 +1,85 @@
 # AMC Movie Planner Discord Bot
 
-A lightweight, asynchronous Discord bot designed to streamline group movie outings. This bot dynamically scrapes local AMC theater data, fetches real-time movie reviews via OMDb, and automates weekly polls while keeping your server chat clean using ephemeral slash commands with optional public visibility.
+A lightweight, asynchronous Discord bot designed to streamline group movie outings. This bot dynamically ingests local AMC theater showtimes via SerpApi into a scheduled weekly JSON cache, enriches metadata (posters, ratings, genres) using zero-key API fallbacks, fetches real-time movie reviews via OMDb, and automates weekly polls while keeping your server chat clean using ephemeral slash commands with optional public visibility.
+
+---
+
+## Implementation Status
+
+| Feature / Module | Status | Description |
+| :--- | :--- | :--- |
+| **SerpApi Schedule Ingestion** | Implemented | Weekly fetching using gl="us" and hl="en" parameters. |
+| **JSON Schedule Cache** | Implemented | Persistent storage in data/weekly_schedule.json. |
+| **Metadata Fallbacks** | Implemented | Zero-key enrichment for posters, genres, and ratings via OMDb/Wikipedia. |
+| **Explicit Error Standards** | Implemented | Uses "Unknown" placeholders instead of misleading "NR" or "General" labels. |
+| **/movies Command** | Implemented | Renders dynamic DD/MM/YYYY dates with compact thumbnail embeds. |
+| **/force_refresh Command** | Implemented | Manual admin override to rebuild schedule cache on demand. |
+| **Thursday 8:30 AM Daemon** | Implemented | Automated background task in tasks.py (discord.ext.tasks). |
+| **Theater Config Management** | Implemented | Dynamic configuration persistence in data/config.json. |
+| **/set_theater Command** | In Progress | Admin configuration command to set target theater dynamically. |
+| **/showtimes Command** | In Progress | Specific movie/date query with autocomplete targeting active cache. |
+| **/upcoming Command** | In Progress | Upcoming release parser mapped to configured theater state. |
+| **/review Command** | In Progress | Real-time OMDb scores and review metadata aggregator. |
+| **!information / !help Command** | In Progress | Guild help manual detailing commands, cache schedules, and usage flags. |
+| **Weekly Discord Polls** | In Progress | Automated native Discord poll creation in designated planning channel. |
+| **Automated Discord Events** | In Progress | Creation of native Discord Events based on winning poll results. |
+| **Discussion Threads** | In Progress | Automatic public thread creation linked to planning events. |
+| **Role Ping System** | In Progress | Dynamic @movie goer role mentions for group alerts. |
+
+---
 
 ## Features
 
+### Cost & Performance Optimization
+- **Low API Footprint:** Utilizes a persistent weekly JSON cache (data/weekly_schedule.json) updated automatically every Thursday at 8:30 AM, restricting external calls to ~4 SerpApi queries per month.
+- **US Regional Enforcement:** Enforces gl="us" and hl="en" API parameters to ensure localized, U.S. English schedules regardless of bot host geographic location.
+- **Sub-Second Response Times:** Users read directly from local cached data, eliminating live scraping delay.
+
 ### Administrator Controls
-- **Dynamic Theater Selection:** Use `/set_theater` with Discord Autocomplete to instantly search and select your local AMC theater from a dynamically updated, locally cached list of all AMC locations.
-- **Smart Caching:** The bot scrapes the AMC sitemap in the background to keep the theater database up to date without rate-limiting or slow response times.
-- **Error Alerts:** If AMC updates their website structure and breaks the scraper, the bot fails gracefully and sends a direct message to the admin.
+- **Dynamic Theater Selection:** Use /set_theater to set your target local AMC theater string saved directly in data/config.json. (In Progress)
+- **Manual Cache Override:** Administrators can invoke /force_refresh to manually rebuild the weekly schedule cache at any time. (Implemented)
+- **Error Alerts:** If an API query fails or metadata extraction encounters errors, the bot fails gracefully and logs diagnostic output. (Implemented)
 
 ### User Commands
-*All user commands default to ephemeral (visible only to the user invoking them) to prevent chat clutter. Users can optionally append a visibility flag `visable` to post the results publicly for the group to see.*
-- **`/movies [visibility]`**: Scrapes the selected AMC theater's daily schedule and returns an embedded list of all movies playing that current day.
-- **`/showtimes [movie] [date] [visibility]`**: Fetches showtimes for a specific film on a given date. 
-  * The `[movie]` parameter features Discord Autocomplete, suggesting currently playing movies at your theater as you type. 
-  * The `[date]` parameter accepts a simple `mm/dd` format and automatically infers the current year.
-- **`/upcoming [visibility]`**: Fetches "Coming Soon" releases for the configured location.
-- **`/review [movie_title] [visibility]`**: Pings the free OMDb API to fetch movie reviews.
+*All user commands default to ephemeral (visible only to the user invoking them) to prevent chat clutter. Users can optionally append a visibility flag visable to post the results publicly for the group to see.*
+- **`/movies [week_day] [visibility]`**: View showtimes for any day of the active schedule week (Thursday through Wednesday). (Implemented)
+  - **Dynamic Date Headers:** Displays exact DD/MM/YYYY calendar dates calculated relative to the weekly cache timestamp.
+  - **Compact Embed UI:** Uses set_thumbnail() to pin small ~80x80px poster graphics to embed corners without clogging chat channels.
+  - **Accurate Metadata & Fallbacks:** Movie entries are enriched via OMDb and Wikipedia REST API lookups. Missing data is explicitly displayed as Unknown (preventing misleading "NR" or "General" labels).
+- **`/showtimes [movie] [date] [visibility]`**: Fetches showtimes for a specific film on a given date. (In Progress)
+  - The [movie] parameter features Discord Autocomplete, suggesting currently playing movies at your theater as you type.
+  - The [date] parameter accepts a simple mm/dd format and automatically infers the current year.
+- **`/upcoming [visibility]`**: Fetches "Coming Soon" releases for the configured location. (In Progress)
+- **`/review [movie_title] [visibility]`**: Pings the free OMDb API to fetch movie reviews and aggregate scores. (In Progress)
+- **`!information` / `!help`**: Displays an interactive command guide, cache status, and privacy visibility instructions for server members. (In Progress)
 
 ### Automation
-- **Weekly Movie Poll:** A background task using `discord.ext.tasks` wakes up once a week, pulls the upcoming weeks showtimes, and automatically posts a native Discord poll in your designated `#movie-planning` channel to help the group decide what to watch.
-- **Automated Scheduling:** Dynamically generates Discord Events based on winning poll results.
-- **Discussion Threads:** Automatically spins up dedicated public threads for movie coordination and spoiler-safe chatting.
-- **Targeted Notifications:** Pings a specific @movie goer role for all polls, threads, and events to avoid server-wide notification fatigue.
+- **Weekly Movie Poll:** A background task using discord.ext.tasks wakes up every Thursday at 8:30 AM, pulls the upcoming week's showtimes, updates the cache, and posts a native Discord poll in your designated #movie-planning channel. (In Progress)
+- **Automated Scheduling:** Dynamically generates Discord Events based on winning poll results. (In Progress)
+- **Discussion Threads:** Automatically spins up dedicated public threads for movie coordination and spoiler-safe chatting. (In Progress)
+- **Targeted Notifications:** Pings a specific @movie goer role for all polls, threads, and events to avoid server-wide notification fatigue. (In Progress)
+
+---
 
 ## Tech Stack
 - **Language:** Python 3.10+
-- **Discord API:** `discord.py` (for Slash Commands, Autocomplete, and Tasks)
-- **Web Scraping:** `BeautifulSoup4` with `lxml` parser (HTML/XML parsing)
-- **Networking:** `aiohttp` and `urllib` (Asynchronous HTTP requests and thread-isolated network execution)
-- **External APIs:** [OMDb API](https://www.omdbapi.com/)
+- **Discord API:** discord.py (for Slash Commands, Prefix Commands, Autocomplete, Embeds, and Tasks)
+- **Data Ingestion:** serpapi (Google Search Engine API wrapper)
+- **Metadata Fallbacks:** Wikimedia REST API & OMDb Public Mirror (urllib JSON processing)
+- **Networking:** asyncio and urllib (Asynchronous HTTP requests and thread-isolated network execution)
+- **External APIs:** SerpApi, OMDb API
+
+---
 
 ## Installation & Setup
 
 ### 1. Prerequisites
 - Python 3.10 or higher
-- A Discord Bot Token (Get one from the [Discord Developer Portal](https://discord.com/developers/applications))
-- A free OMDb API Key (Get one [here](https://www.omdbapi.com/apikey.aspx))
+- A Discord Bot Token (Get one from the Discord Developer Portal)
+- A SerpApi Key (Get one from SerpApi)
+- A free OMDb API Key (Get one from OMDb)
 
 ### 2. Clone the Repository
 ```bash
 git clone [https://github.com/yourusername/amc-discord-bot.git](https://github.com/yourusername/amc-discord-bot.git)
-cd amc-discord-bot   
+cd amc-discord-bot
