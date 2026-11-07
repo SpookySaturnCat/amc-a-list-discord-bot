@@ -1,0 +1,13 @@
+# Secrets and Configuration
+.env
+config.json
+server_config.json
+
+# Python Environments & Cache
+.venv/
+__pycache__/
+*.pyc
+.idea/
+
+# Local Data Caches (To avoid uploading massive/changing JSONs)
+theaters.json
