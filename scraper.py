@@ -3,42 +3,47 @@ import json
 import os
 import re
 from urllib.request import Request, urlopen
+from urllib.error import URLError
 from bs4 import BeautifulSoup
 from serpapi import GoogleSearch
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 THEATERS_FILE = os.path.join(DATA_DIR, "theaters.json")
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-# Synchronous helper to fetch the sitemap XML for theater directory caching
 def _sync_fetch_sitemap() -> str:
+    # Synchronous helper to fetch the sitemap XML for theater directory caching.
     url = "https://www.amctheatres.com/sitemaps/sitemap-theatres.xml"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     req = Request(url, headers=headers)
-    with urlopen(req, timeout=10) as response:
-        return response.read().decode("utf-8")
+    try:
+        with urlopen(req, timeout=10) as response:
+            return response.read().decode("utf-8")
+    except URLError as e:
+        print(f"Failed to fetch sitemap: {e}")
+        return ""
 
-# Parses the sitemap XML into structured records and writes to data/theaters.json
 def update_theater_cache() -> list[dict]:
+    # Parses the sitemap XML into structured records and writes to data/theaters.json.
     raw_xml = _sync_fetch_sitemap()
-    soup = BeautifulSoup(raw_xml, "xml")
-    loc_tags = soup.find_all("loc")
+    if not raw_xml:
+        return load_cached_theaters()
 
+    soup = BeautifulSoup(raw_xml, "xml")
     parsed_theaters = []
     pattern = re.compile(r"amctheatres\.com/movie-theatres/([^/]+)/([^/]+)$")
 
-    for tag in loc_tags:
+    for tag in soup.find_all("loc"):
         url = tag.text.strip()
-        match = pattern.search(url)
-        if match:
+        if match := pattern.search(url):
             city_slug, theater_slug = match.groups()
             display_theater = theater_slug.replace("-", " ").title()
             display_city = city_slug.replace("-", " ").title()
-            full_name = f"{display_theater} ({display_city})"
 
             parsed_theaters.append({
-                "name": full_name,
+                "name": f"{display_theater} ({display_city})",
                 "slug": theater_slug,
                 "url": url
             })
@@ -49,20 +54,24 @@ def update_theater_cache() -> list[dict]:
 
     return parsed_theaters
 
-# Asynchronous wrapper for updating local theater directory
 async def fetch_theater_directory() -> list[dict]:
+    # Asynchronous wrapper for updating local theater directory.
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, update_theater_cache)
 
-# Loads stored theater database from data/theaters.json
+
 def load_cached_theaters() -> list[dict]:
+    # Loads stored theater database from data/theaters.json.
     if os.path.exists(THEATERS_FILE):
-        with open(THEATERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(THEATERS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
     return []
 
-# SerpApi search fetcher for theater showtimes
 def _sync_fetch_google_showtimes(theater_name: str) -> list[dict]:
+    # SerpApi search fetcher for theater showtimes.
     api_key = os.getenv("SERPAPI_KEY")
     if not api_key:
         print("SERPAPI_KEY is missing from .env environment variables.")
@@ -77,21 +86,17 @@ def _sync_fetch_google_showtimes(theater_name: str) -> list[dict]:
     try:
         search = GoogleSearch(params)
         results = search.get_dict()
-        showtime_data = results.get("showtimes", [])
 
         movies = []
-        if showtime_data and len(showtime_data) > 0:
-            day_schedule = showtime_data[0].get("movies", [])
-            for movie in day_schedule:
+        if showtime_data := results.get("showtimes", []):
+            for movie in showtime_data[0].get("movies", []):
                 title = movie.get("name")
-                poster_url = movie.get("thumbnail") or ""
-
-                raw_times = movie.get("showing", [])
+                poster_url = movie.get("thumbnail", "")
                 time_strings = []
-                for entry in raw_times:
+
+                for entry in movie.get("showing", []):
                     if isinstance(entry, dict):
-                        times_list = entry.get("time", [])
-                        time_strings.extend(times_list)
+                        time_strings.extend(entry.get("time", []))
                     elif isinstance(entry, str):
                         time_strings.append(entry)
 
@@ -106,15 +111,15 @@ def _sync_fetch_google_showtimes(theater_name: str) -> list[dict]:
         print(f"SerpApi Execution Error: {e}")
         return []
 
-# Asynchronous wrapper fetching theater showtimes via SerpApi
-async def fetch_daily_schedule(theater_url: str) -> list[dict]:
-    # Extract clean theater name from stored configuration or directory
-    config_path = os.path.join(DATA_DIR, "config.json")
+async def fetch_daily_schedule() -> list[dict]:
+    # Asynchronous wrapper fetching theater showtimes via SerpApi using active config.
     theater_name = "AMC Theater"
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            theater_name = cfg.get("theater_name", theater_name)
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                theater_name = json.load(f).get("theater_name", theater_name)
+        except json.JSONDecodeError:
+            pass
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _sync_fetch_google_showtimes, theater_name)

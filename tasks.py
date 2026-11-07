@@ -26,12 +26,11 @@ DAY_PREFIXES = {
 MOVIE_METADATA_CACHE = {}
 
 def _resolve_dynamic_day(raw_day_str: str, base_time: datetime) -> str:
-    """Dynamically converts 'Today', 'Tomorrow', 'Mon', 'Thu', etc. into full weekday names."""
+    # Dynamically converts 'Today', 'Tomorrow', 'Mon', 'Thu', etc. into full weekday names.
     if not raw_day_str:
         return base_time.strftime("%A")
 
     clean_str = raw_day_str.strip().lower()
-
     if "today" in clean_str:
         return base_time.strftime("%A")
     if "tomorrow" in clean_str:
@@ -44,10 +43,7 @@ def _resolve_dynamic_day(raw_day_str: str, base_time: datetime) -> str:
     return raw_day_str.strip()
 
 def _fetch_movie_metadata(title: str) -> dict:
-    """
-    Queries OMDb mirror and Wikipedia summary endpoints to fetch
-    genre, MPAA rating, and clean direct .jpg/.png poster links in a single pass.
-    """
+    # Queries OMDb mirror and Wikipedia summary endpoints to fetch metadata.
     if title in MOVIE_METADATA_CACHE:
         return MOVIE_METADATA_CACHE[title]
 
@@ -66,30 +62,22 @@ def _fetch_movie_metadata(title: str) -> dict:
         with urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("Response") == "True":
-                genre = data.get("Genre")
-                rating = data.get("Rated")
-                poster = data.get("Poster")
-
-                if genre and genre != "N/A":
-                    default_meta["genre"] = genre
-
-                if rating and rating != "N/A":
-                    default_meta["rating"] = rating
-
-                if poster and poster != "N/A" and poster.startswith("http"):
-                    default_meta["poster_url"] = poster
+                if genre := data.get("Genre"):
+                    default_meta["genre"] = genre if genre != "N/A" else default_meta["genre"]
+                if rating := data.get("Rated"):
+                    default_meta["rating"] = rating if rating != "N/A" else default_meta["rating"]
+                if poster := data.get("Poster"):
+                    if poster != "N/A" and poster.startswith("http"):
+                        default_meta["poster_url"] = poster
 
                 MOVIE_METADATA_CACHE[title] = default_meta
                 return default_meta
     except Exception:
         pass
 
-    # Secondary fallback: Wikipedia summary API with (film) disambiguation support
-    queries_to_try = [title, f"{title} (film)", f"{title} (movie)"]
-    for query_term in queries_to_try:
-        clean_title = urllib.parse.quote(query_term)
-        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{clean_title}"
-
+    # Secondary fallback: Wikipedia summary API
+    for query_term in [title, f"{title} (film)", f"{title} (movie)"]:
+        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(query_term)}"
         try:
             req = Request(wiki_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
             with urlopen(req, timeout=3) as resp:
@@ -98,20 +86,16 @@ def _fetch_movie_metadata(title: str) -> dict:
                     continue
 
                 extract = data.get("extract", "")
-
                 genre_match = re.search(
                     r"\b(action|comedy|drama|horror|thriller|animated|animation|sci-fi|family|adventure|documentary|musical|fantasy|crime|mystery|romance)\b",
-                    extract,
-                    re.I
+                    extract, re.IGNORECASE
                 )
                 if genre_match:
                     found_genre = genre_match.group(1).capitalize()
                     default_meta["genre"] = "Sci-Fi" if found_genre.lower() == "sci-fi" else found_genre
 
-                thumbnail_obj = data.get("thumbnail", {})
-                img_source = thumbnail_obj.get("source", "")
-                if img_source and (img_source.endswith(".jpg") or img_source.endswith(".png") or img_source.endswith(
-                        ".jpeg") or "upload.wikimedia.org" in img_source):
+                img_source = data.get("thumbnail", {}).get("source", "")
+                if img_source and any(img_source.endswith(ext) for ext in [".jpg", ".png", ".jpeg"]):
                     default_meta["poster_url"] = img_source
 
                 MOVIE_METADATA_CACHE[title] = default_meta
@@ -123,61 +107,57 @@ def _fetch_movie_metadata(title: str) -> dict:
     return default_meta
 
 def fetch_and_cache_weekly_showtimes() -> dict:
+    # Executes the core scraping routine and writes results to the JSON cache.
     api_key = os.getenv("SERPAPI_KEY")
     if not api_key:
-        print("SERPAPI_KEY is missing from environment.")
         return {"status": "error", "message": "Missing API Key", "movies": []}
 
     theater_name = "AMC Theater"
     custom_location = None
 
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            theater_name = cfg.get("theater_name", theater_name)
-            custom_location = cfg.get("location")
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                theater_name = cfg.get("theater_name", theater_name)
+                custom_location = cfg.get("location")
+        except json.JSONDecodeError:
+            pass
 
     now = datetime.now()
-
     os.makedirs(DATA_DIR, exist_ok=True)
-    temp_cache = {"updating": True, "last_updated": now.isoformat(), "movies": []}
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(temp_cache, f, indent=2)
 
-    query = f"{theater_name} showtimes"
+    # Mark cache as updating
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"updating": True, "last_updated": now.isoformat(), "movies": []}, f, indent=2)
+
     params = {
         "engine": "google",
-        "q": query,
+        "q": f"{theater_name} showtimes",
         "hl": "en",
         "gl": "us",
         "api_key": api_key
     }
-
     if custom_location:
         params["location"] = custom_location
 
     try:
-        search = GoogleSearch(params)
-        results = search.get_dict()
-        showtime_data = results.get("showtimes", [])
-
+        results = GoogleSearch(params).get_dict()
         movies_list = []
-        if showtime_data and isinstance(showtime_data, list):
+
+        if showtime_data := results.get("showtimes", []):
             for day_entry in showtime_data:
-                raw_day = day_entry.get("day", "")
-                resolved_day = _resolve_dynamic_day(raw_day, now)
+                resolved_day = _resolve_dynamic_day(day_entry.get("day", ""), now)
 
                 for movie in day_entry.get("movies", []):
                     title = movie.get("name")
                     if not title:
                         continue
 
-                    # Retrieve metadata (genre, rating, poster URL)
                     meta = _fetch_movie_metadata(title)
-
-                    raw_times = movie.get("showing", [])
                     time_strings = []
-                    for entry in raw_times:
+
+                    for entry in movie.get("showing", []):
                         if isinstance(entry, dict):
                             time_strings.extend(entry.get("time", []))
                         elif isinstance(entry, str):
@@ -185,7 +165,6 @@ def fetch_and_cache_weekly_showtimes() -> dict:
 
                     movies_list.append({
                         "day": resolved_day,
-                        "raw_day_source": raw_day,
                         "title": title,
                         "genre": meta["genre"],
                         "rating": meta["rating"],
@@ -193,12 +172,7 @@ def fetch_and_cache_weekly_showtimes() -> dict:
                         "showtimes": time_strings
                     })
 
-        final_cache = {
-            "updating": False,
-            "last_updated": now.isoformat(),
-            "movies": movies_list
-        }
-
+        final_cache = {"updating": False, "last_updated": now.isoformat(), "movies": movies_list}
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(final_cache, f, indent=2)
 
@@ -212,8 +186,9 @@ def fetch_and_cache_weekly_showtimes() -> dict:
             json.dump(error_cache, f, indent=2)
         return error_cache
 
-@tasks.loop(minutes = 1)
-async def schedule_updater_task():
+@tasks.loop(minutes=1)
+async def schedule_updater_task() -> None:
+    # Background daemon checking for the Thursday 8:30 AM weekly cache refresh window.
     now = datetime.now()
     if now.weekday() == 3 and now.hour == 8 and now.minute == 30:
         print("Triggering Thursday 8:30 AM weekly schedule cache refresh...")
