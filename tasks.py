@@ -1,17 +1,21 @@
 import asyncio
 import json
 import os
-import re
-import urllib.parse
-from urllib.request import Request, urlopen
+import time
 from datetime import datetime, timedelta
+from typing import Set, Tuple, Dict, Any, List
 from discord.ext import tasks
 from serpapi import GoogleSearch
+import aiohttp
+from curl_cffi.requests import AsyncSession
+from scraper import async_fetch_tmdb_metadata_and_reviews
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-CACHE_FILE = os.path.join(DATA_DIR, "weekly_schedule.json")
+# Data directory paths
+DATA_DIR = os.path.join(str(os.path.dirname(__file__)), "data")
+CACHE_FILE = os.path.join(DATA_DIR, "movie_schedule_and_metadata.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
+# Day prefix mapping for relative query strings
 DAY_PREFIXES = {
     "mon": "Monday",
     "tue": "Tuesday",
@@ -22,11 +26,8 @@ DAY_PREFIXES = {
     "sun": "Sunday"
 }
 
-# In-memory lookup cache to avoid repeating HTTP calls for identical titles across days
-MOVIE_METADATA_CACHE = {}
-
+# Map dynamic day strings ('Today', 'Tomorrow', prefix matches) to full weekday names
 def _resolve_dynamic_day(raw_day_str: str, base_time: datetime) -> str:
-    # Dynamically converts 'Today', 'Tomorrow', 'Mon', 'Thu', etc. into full weekday names.
     if not raw_day_str:
         return base_time.strftime("%A")
 
@@ -42,79 +43,40 @@ def _resolve_dynamic_day(raw_day_str: str, base_time: datetime) -> str:
 
     return raw_day_str.strip()
 
-def _fetch_movie_metadata(title: str) -> dict:
-    # Queries OMDb mirror and Wikipedia summary endpoints to fetch metadata.
-    if title in MOVIE_METADATA_CACHE:
-        return MOVIE_METADATA_CACHE[title]
+# Execute concurrent metadata and review extraction for all ingested movie titles
+async def _fetch_all_metadata_async(unique_titles: Set[str]) -> Tuple[Dict[str, Any], bool]:
+    async with aiohttp.ClientSession() as aio_session:
+        async with AsyncSession() as curl_session:  # type: ignore
+            tasks_list = [
+                async_fetch_tmdb_metadata_and_reviews(aio_session, curl_session, title)
+                for title in unique_titles
+            ]
+            results = await asyncio.gather(*tasks_list)
 
-    default_meta = {
-        "genre": "Unknown",
-        "rating": "Unknown",
-        "poster_url": "https://images.amctheatres.com/amc-website/static/images/fallback/poster-placeholder.png"
-    }
+            metadata_map: Dict[str, Any] = {}
+            rt_health_checks: List[bool] = []
 
-    # Primary lookup: Public OMDb mirror endpoint
-    encoded_title = urllib.parse.quote(title)
-    omdb_url = f"https://www.omdbapi.com/?t={encoded_title}&apikey=trilogy"
+            for title, (meta_data, is_healthy) in zip(unique_titles, results):
+                metadata_map[title] = meta_data
+                rt_health_checks.append(is_healthy)
 
-    try:
-        req = Request(omdb_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if data.get("Response") == "True":
-                if genre := data.get("Genre"):
-                    default_meta["genre"] = genre if genre != "N/A" else default_meta["genre"]
-                if rating := data.get("Rated"):
-                    default_meta["rating"] = rating if rating != "N/A" else default_meta["rating"]
-                if poster := data.get("Poster"):
-                    if poster != "N/A" and poster.startswith("http"):
-                        default_meta["poster_url"] = poster
+            # Mark RT scraper health status broken if failure rate exceeds 25% threshold
+            failed_count = rt_health_checks.count(False)
+            rt_overall_healthy = failed_count < (len(unique_titles) * 0.25)
 
-                MOVIE_METADATA_CACHE[title] = default_meta
-                return default_meta
-    except Exception:
-        pass
+            return metadata_map, rt_overall_healthy
 
-    # Secondary fallback: Wikipedia summary API
-    for query_term in [title, f"{title} (film)", f"{title} (movie)"]:
-        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(query_term)}"
-        try:
-            req = Request(wiki_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            with urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("type") == "disambiguation":
-                    continue
-
-                extract = data.get("extract", "")
-                genre_match = re.search(
-                    r"\b(action|comedy|drama|horror|thriller|animated|animation|sci-fi|family|adventure|documentary|musical|fantasy|crime|mystery|romance)\b",
-                    extract, re.IGNORECASE
-                )
-                if genre_match:
-                    found_genre = genre_match.group(1).capitalize()
-                    default_meta["genre"] = "Sci-Fi" if found_genre.lower() == "sci-fi" else found_genre
-
-                img_source = data.get("thumbnail", {}).get("source", "")
-                if img_source and any(img_source.endswith(ext) for ext in [".jpg", ".png", ".jpeg"]):
-                    default_meta["poster_url"] = img_source
-
-                MOVIE_METADATA_CACHE[title] = default_meta
-                return default_meta
-        except Exception:
-            pass
-
-    MOVIE_METADATA_CACHE[title] = default_meta
-    return default_meta
-
-def fetch_and_cache_weekly_showtimes() -> dict:
-    # Executes the core scraping routine and writes results to the JSON cache.
+# Scrape theater schedule data via SerpApi and populate unified metadata JSON cache
+def fetch_and_cache_weekly_showtimes() -> Dict[str, Any]:
+    start_time = time.perf_counter()
     api_key = os.getenv("SERPAPI_KEY")
     if not api_key:
-        return {"status": "error", "message": "Missing API Key", "movies": []}
+        return {"status": "error", "message": "Missing API Key", "schedule": [], "metadata": {}, "elapsed_seconds": 0.0}
 
     theater_name = "AMC Theater"
     custom_location = None
 
+    # Load active guild theater configuration override if present
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -127,10 +89,6 @@ def fetch_and_cache_weekly_showtimes() -> dict:
     now = datetime.now()
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # Mark cache as updating
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"updating": True, "last_updated": now.isoformat(), "movies": []}, f, indent=2)
-
     params = {
         "engine": "google",
         "q": f"{theater_name} showtimes",
@@ -142,8 +100,10 @@ def fetch_and_cache_weekly_showtimes() -> dict:
         params["location"] = custom_location
 
     try:
+        # Ingest schedule payload from SerpApi Google search engine
         results = GoogleSearch(params).get_dict()
-        movies_list = []
+        schedule_list: List[Dict[str, Any]] = []
+        unique_titles: Set[str] = set()
 
         if showtime_data := results.get("showtimes", []):
             for day_entry in showtime_data:
@@ -154,41 +114,60 @@ def fetch_and_cache_weekly_showtimes() -> dict:
                     if not title:
                         continue
 
-                    meta = _fetch_movie_metadata(title)
-                    time_strings = []
-
+                    unique_titles.add(title)
+                    time_strings: List[str] = []
                     for entry in movie.get("showing", []):
                         if isinstance(entry, dict):
                             time_strings.extend(entry.get("time", []))
                         elif isinstance(entry, str):
                             time_strings.append(entry)
 
-                    movies_list.append({
+                    schedule_list.append({
                         "day": resolved_day,
                         "title": title,
-                        "genre": meta["genre"],
-                        "rating": meta["rating"],
-                        "poster_url": meta["poster_url"],
                         "showtimes": time_strings
                     })
 
-        final_cache = {"updating": False, "last_updated": now.isoformat(), "movies": movies_list}
+        # Safely resolve event loop execution context for metadata enrichment tasks
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                metadata_map, rt_healthy = asyncio.run_coroutine_threadsafe(
+                    _fetch_all_metadata_async(unique_titles), loop
+                ).result()
+            else:
+                metadata_map, rt_healthy = loop.run_until_complete(_fetch_all_metadata_async(unique_titles))
+        except RuntimeError:
+            metadata_map, rt_healthy = asyncio.run(_fetch_all_metadata_async(unique_titles))
+
+        elapsed_seconds = round(time.perf_counter() - start_time, 2)
+        final_cache: Dict[str, Any] = {
+            "updating": False,
+            "last_updated": now.isoformat(),
+            "elapsed_seconds": elapsed_seconds,
+            "rt_status": "healthy" if rt_healthy else "broken",
+            "schedule": schedule_list,
+            "metadata": metadata_map
+        }
+
+        # Write cache to disk
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(final_cache, f, indent=2)
 
-        print(f"Weekly cache successfully populated with {len(movies_list)} entries.")
+        print(f"Unified cache populated in {elapsed_seconds}s (RT Status: {'Healthy' if rt_healthy else 'BROKEN'}).")
         return final_cache
 
     except Exception as e:
-        print(f"Failed to fetch weekly showtimes: {e}")
-        error_cache = {"updating": False, "error": str(e), "movies": []}
+        elapsed_seconds = round(time.perf_counter() - start_time, 2)
+        print(f"Failed to fetch weekly schedule: {e}")
+        error_cache: Dict[str, Any] = {"updating": False, "error": str(e), "elapsed_seconds": elapsed_seconds, "schedule": [], "metadata": {}}
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(error_cache, f, indent=2)
         return error_cache
 
+# Automated background daemon enforcing Thursday 8:30 AM schedule cache rebuilds
 @tasks.loop(minutes=1)
 async def schedule_updater_task() -> None:
-    # Background daemon checking for the Thursday 8:30 AM weekly cache refresh window.
     now = datetime.now()
     if now.weekday() == 3 and now.hour == 8 and now.minute == 30:
         print("Triggering Thursday 8:30 AM weekly schedule cache refresh...")
